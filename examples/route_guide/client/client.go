@@ -39,9 +39,14 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"math/rand"
 	"time"
+
+	"crypto/tls"
+	"crypto/x509"
+	"io/ioutil"
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -51,10 +56,12 @@ import (
 )
 
 var (
-	tls                = flag.Bool("tls", false, "Connection uses TLS if true, else plain TCP")
-	caFile             = flag.String("ca_file", "testdata/ca.pem", "The file containning the CA root cert file")
-	serverAddr         = flag.String("server_addr", "127.0.0.1:10000", "The server address in the format of host:port")
-	serverHostOverride = flag.String("server_host_override", "x.test.youtube.com", "The server name use to verify the hostname returned by TLS handshake")
+	withTls            = flag.Bool("tls", false, "Connection uses TLS if true, else plain TCP")
+	caFile             = flag.String("ca-file", "certs/RootCA.crt", "The file containing the CA root cert file")
+	clientCert         = flag.String("cert-file", "certs/example.com.crt", "The client certificate file")
+	clientKey          = flag.String("key-file", "certs/example.com.key", "The client key file")
+	serverAddr         = flag.String("server-addr", "127.0.0.1:10000", "The server address in the format of host:port")
+	serverHostOverride = flag.String("server-host-override", "example.com", "The server name use to verify the hostname returned by TLS handshake")
 )
 
 // printFeature gets the feature for the given point.
@@ -156,24 +163,38 @@ func randomPoint(r *rand.Rand) *pb.Point {
 	return &pb.Point{Latitude: lat, Longitude: long}
 }
 
+func loadCreds() credentials.TransportCredentials {
+	certificate, err := tls.LoadX509KeyPair(
+		*clientCert,
+		*clientKey,
+	)
+
+	fmt.Println(*clientKey, *clientCert)
+
+	certPool := x509.NewCertPool()
+	bs, err := ioutil.ReadFile(*caFile)
+	if err != nil {
+		grpclog.Fatalf("failed to read ca cert: %s", err)
+	}
+
+	ok := certPool.AppendCertsFromPEM(bs)
+	if !ok {
+		grpclog.Fatal("failed to append certs")
+	}
+
+	transportCreds := credentials.NewTLS(&tls.Config{
+		ServerName:   *serverHostOverride,
+		Certificates: []tls.Certificate{certificate},
+		RootCAs:      certPool,
+	})
+	return transportCreds
+}
+
 func main() {
 	flag.Parse()
 	var opts []grpc.DialOption
-	if *tls {
-		var sn string
-		if *serverHostOverride != "" {
-			sn = *serverHostOverride
-		}
-		var creds credentials.TransportCredentials
-		if *caFile != "" {
-			var err error
-			creds, err = credentials.NewClientTLSFromFile(*caFile, sn)
-			if err != nil {
-				grpclog.Fatalf("Failed to create TLS credentials %v", err)
-			}
-		} else {
-			creds = credentials.NewClientTLSFromCert(nil, sn)
-		}
+	if *withTls {
+		creds := loadCreds()
 		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
 		opts = append(opts, grpc.WithInsecure())

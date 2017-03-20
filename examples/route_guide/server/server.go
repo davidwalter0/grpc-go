@@ -53,15 +53,18 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
 
+	"crypto/tls"
+	"crypto/x509"
 	"github.com/golang/protobuf/proto"
 
 	pb "google.golang.org/grpc/examples/route_guide/routeguide"
 )
 
 var (
-	tls        = flag.Bool("tls", false, "Connection uses TLS if true, else plain TCP")
-	certFile   = flag.String("cert_file", "testdata/server1.pem", "The TLS cert file")
-	keyFile    = flag.String("key_file", "testdata/server1.key", "The TLS key file")
+	withTls    = flag.Bool("tls", false, "Connection uses TLS if true, else plain TCP")
+	rootCAFile = flag.String("root-ca", "certs/RootCA.crt", "The Root CA file")
+	certFile   = flag.String("cert-file", "certs/example.com.crt", "The TLS cert file")
+	keyFile    = flag.String("key-file", "certs/example.com.key", "The TLS key file")
 	jsonDBFile = flag.String("json_db_file", "testdata/route_guide_db.json", "A json file containing a list of features")
 	port       = flag.Int("port", 10000, "The server port")
 )
@@ -219,6 +222,34 @@ func newServer() *routeGuideServer {
 	return s
 }
 
+func loadCreds() grpc.ServerOption {
+
+	certificate, err := tls.LoadX509KeyPair(
+		*certFile,
+		*keyFile,
+	)
+
+	certPool := x509.NewCertPool()
+	bs, err := ioutil.ReadFile(*rootCAFile)
+	if err != nil {
+		grpclog.Fatalf("failed to read client ca cert: %s", err)
+	}
+
+	ok := certPool.AppendCertsFromPEM(bs)
+	if !ok {
+		grpclog.Fatal("failed to append client certs")
+	}
+
+	tlsConfig := &tls.Config{
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		Certificates: []tls.Certificate{certificate},
+		ClientCAs:    certPool,
+	}
+
+	serverOption := grpc.Creds(credentials.NewTLS(tlsConfig))
+	return serverOption
+}
+
 func main() {
 	flag.Parse()
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
@@ -226,12 +257,8 @@ func main() {
 		grpclog.Fatalf("failed to listen: %v", err)
 	}
 	var opts []grpc.ServerOption
-	if *tls {
-		creds, err := credentials.NewServerTLSFromFile(*certFile, *keyFile)
-		if err != nil {
-			grpclog.Fatalf("Failed to generate credentials %v", err)
-		}
-		opts = []grpc.ServerOption{grpc.Creds(creds)}
+	if *withTls {
+		opts = append(opts, loadCreds())
 	}
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterRouteGuideServer(grpcServer, newServer())
